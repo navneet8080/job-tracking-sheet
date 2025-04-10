@@ -1,24 +1,47 @@
 import pandas as pd
-from openpyxl.styles import PatternFill, Font
+from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.styles.borders import Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.chart import PieChart, BarChart, Reference
+from openpyxl.chart.label import DataLabelList
 from openpyxl.formatting.rule import FormulaRule
 import gspread
 from google.oauth2.service_account import Credentials
+from datetime import datetime
 import os
 
 def create_excel_job_tracker(output_file='Job_Tracker.xlsx'):
-    """Create an Excel job tracker with all specified formatting"""
+    """Create an Excel job tracker with dashboard"""
     
-    # Define column headers
+    # Define column headers for main tracker
     headers = [
         '#', 'Company Name', 'Job Title', 'Job Location', 'Date Applied',
         'Job Posting Link', 'Resume Link', 'Cover Letter Link', 
         'Application Status', 'Follow-Up Date', 'Response Received?', 'Notes'
     ]
     
-    # Create a DataFrame with headers
+    # Create sample data for demonstration
+    sample_data = [
+        {
+            '#': 1,
+            'Company Name': 'Tech Corp',
+            'Job Title': 'Software Engineer',
+            'Date Applied': datetime.today().strftime('%Y-%m-%d'),
+            'Application Status': 'Applied'
+        },
+        {
+            '#': 2,
+            'Company Name': 'Data Inc',
+            'Job Title': 'Data Analyst',
+            'Date Applied': (datetime.today() - pd.Timedelta(days=3)).strftime('%Y-%m-%d'),
+            'Application Status': 'Interview Scheduled'
+        }
+    ]
+    
+    # Create DataFrame
     df = pd.DataFrame(columns=headers)
+    df = pd.concat([df, pd.DataFrame(sample_data)], ignore_index=True)
     
     # Create Excel writer
     writer = pd.ExcelWriter(output_file, engine='openpyxl')
@@ -89,15 +112,76 @@ def create_excel_job_tracker(output_file='Job_Tracker.xlsx'):
     # Freeze top row
     worksheet.freeze_panes = 'A2'
     
+    # ========== DASHBOARD CREATION ==========
+    dashboard = workbook.create_sheet(title="📈 Dashboard")
+    
+    # Dashboard layout
+    dashboard.merge_cells('A1:D1')
+    dashboard['A1'] = "Job Application Dashboard"
+    dashboard['A1'].font = Font(size=18, bold=True)
+    dashboard['A1'].alignment = Alignment(horizontal='center')
+    
+    # Create metric cards
+    metrics = [
+        ("Total Applied", "COUNTIF('Job Applications'!I:I,\"*\")"),
+        ("Interviews", "COUNTIF('Job Applications'!I:I,\"Interview Scheduled\")"),
+        ("Offers", "COUNTIF('Job Applications'!I:I,\"Offer\")"),
+        ("Rejections", "COUNTIF('Job Applications'!I:I,\"Rejected\")"),
+        ("Follow-ups Needed", "COUNTIF('Job Applications'!I:I,\"Followed Up\")"),
+        ("No Response", "COUNTIF('Job Applications'!I:I,\"No Response\")")
+    ]
+    
+    # Position metric cards
+    for i, (label, formula) in enumerate(metrics):
+        row = 3 + (i // 2) * 3
+        col = 2 + (i % 2) * 5
+        
+        # Metric label
+        dashboard.cell(row=row, column=col, value=label).font = Font(bold=True)
+        
+        # Metric value
+        dashboard.cell(row=row+1, column=col, value=f'={formula}').font = Font(size=14, bold=True)
+        
+        # Format as card
+        for r in range(row, row+2):
+            for c in range(col, col+3):
+                cell = dashboard.cell(row=r, column=c)
+                cell.fill = PatternFill(start_color="F0F0F0", end_color="F0F0F0", fill_type="solid")
+                cell.border = Border(left=Side(style='thin'), right=Side(style='thin'), 
+                                   top=Side(style='thin'), bottom=Side(style='thin'))
+    
+    # Create pie chart for status distribution
+    pie = PieChart()
+    labels = Reference(worksheet, min_col=9, min_row=2, max_row=100)
+    data = Reference(worksheet, min_col=9, min_row=1, max_row=100)
+    pie.add_data(data, titles_from_data=True)
+    pie.set_categories(labels)
+    pie.title = "Application Status Distribution"
+    pie.dataLabels = DataLabelList()
+    pie.dataLabels.showPercent = True
+    dashboard.add_chart(pie, "A15")
+    
+    # Create bar chart for daily applications
+    bar = BarChart()
+    dates = Reference(worksheet, min_col=5, min_row=2, max_row=100)
+    counts = Reference(worksheet, min_col=1, min_row=1, max_row=100)
+    bar.add_data(counts, titles_from_data=True)
+    bar.set_categories(dates)
+    bar.title = "Daily Applications"
+    bar.style = 10
+    bar.y_axis.title = "Count"
+    bar.x_axis.title = "Date"
+    dashboard.add_chart(bar, "I15")
+    
     # Save the workbook
     workbook.save(output_file)
-    print(f"Excel job tracker created successfully: {output_file}")
+    print(f"Excel job tracker with dashboard created successfully: {output_file}")
 
 def create_google_sheets_job_tracker(creds_file=None, sheet_name='Job Tracker'):
-    """Create a Google Sheets job tracker with all specified formatting"""
+    """Create a Google Sheets job tracker with dashboard"""
     
     if not creds_file or not os.path.exists(creds_file):
-        print("Google Sheets creation requires a credentials file. Please provide the path to your service account JSON file.")
+        print("Google Sheets creation requires a credentials file.")
         return
     
     try:
@@ -111,8 +195,9 @@ def create_google_sheets_job_tracker(creds_file=None, sheet_name='Job Tracker'):
         # Create a new spreadsheet
         spreadsheet = client.create(sheet_name)
         
-        # Get the first worksheet
+        # Get the first worksheet (main tracker)
         worksheet = spreadsheet.get_worksheet(0)
+        worksheet.update_title("Job Applications")
         
         # Define column headers
         headers = [
@@ -169,25 +254,24 @@ def create_google_sheets_job_tracker(creds_file=None, sheet_name='Job Tracker'):
         
         # Define conditional formatting rules
         status_colors = {
-            'Applied': {'red': 0.678, 'green': 0.847, 'blue': 0.902},          # Light Blue
-            'Interview Scheduled': {'red': 0.565, 'green': 0.933, 'blue': 0.565},  # Light Green
-            'Offer': {'red': 1.0, 'green': 1.0, 'blue': 0.0},            # Gold/Yellow
-            'Rejected': {'red': 1.0, 'green': 0.6, 'blue': 0.6},          # Light Red
-            'Followed Up': {'red': 1.0, 'green': 0.647, 'blue': 0.0},       # Orange
-            'No Response': {'red': 0.827, 'green': 0.827, 'blue': 0.827},       # Light Gray
-            'On Hold': {'red': 0.902, 'green': 0.902, 'blue': 0.980}           # Lavender
+            'Applied': {'red': 0.678, 'green': 0.847, 'blue': 0.902},
+            'Interview Scheduled': {'red': 0.565, 'green': 0.933, 'blue': 0.565},
+            'Offer': {'red': 1.0, 'green': 1.0, 'blue': 0.0},
+            'Rejected': {'red': 1.0, 'green': 0.6, 'blue': 0.6},
+            'Followed Up': {'red': 1.0, 'green': 0.647, 'blue': 0.0},
+            'No Response': {'red': 0.827, 'green': 0.827, 'blue': 0.827},
+            'On Hold': {'red': 0.902, 'green': 0.902, 'blue': 0.980}
         }
         
         # Apply conditional formatting
         requests = []
         for status, color in status_colors.items():
-            # Create a format rule for the entire row
             rule = {
                 "ranges": [{
                     "sheetId": worksheet.id,
-                    "startRowIndex": 1,  # Skip header row
+                    "startRowIndex": 1,
                     "startColumnIndex": 0,
-                    "endColumnIndex": 12  # Columns A-L
+                    "endColumnIndex": 12
                 }],
                 "booleanRule": {
                     "condition": {
@@ -218,10 +302,199 @@ def create_google_sheets_job_tracker(creds_file=None, sheet_name='Job Tracker'):
         }
         requests.append(freeze_request)
         
+        # ========== CREATE DASHBOARD ==========
+        dashboard = spreadsheet.add_worksheet(title="📈 Dashboard", rows=100, cols=20)
+        
+        # Dashboard header
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": dashboard.id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 4
+                },
+                "cell": {
+                    "userEnteredValue": {"stringValue": "Job Application Dashboard"},
+                    "userEnteredFormat": {
+                        "textFormat": {"fontSize": 18, "bold": True},
+                        "horizontalAlignment": "CENTER"
+                    }
+                },
+                "fields": "userEnteredValue,userEnteredFormat.textFormat,userEnteredFormat.horizontalAlignment"
+            },
+            "mergeCells": {
+                "range": {
+                    "sheetId": dashboard.id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 4
+                },
+                "mergeType": "MERGE_ALL"
+            }
+        })
+        
+        # Add metric cards
+        metrics = [
+            ("A3", "Total Applied", "=COUNTIF('Job Applications'!I:I,\"*\")"),
+            ("G3", "Interviews", "=COUNTIF('Job Applications'!I:I,\"Interview Scheduled\")"),
+            ("A8", "Offers", "=COUNTIF('Job Applications'!I:I,\"Offer\")"),
+            ("G8", "Rejections", "=COUNTIF('Job Applications'!I:I,\"Rejected\")"),
+            ("A13", "Follow-ups Needed", "=COUNTIF('Job Applications'!I:I,\"Followed Up\")"),
+            ("G13", "No Response", "=COUNTIF('Job Applications'!I:I,\"No Response\")")
+        ]
+        
+        for cell, label, formula in metrics:
+            # Label
+            requests.append({
+                "updateCells": {
+                    "range": {
+                        "sheetId": dashboard.id,
+                        "startRowIndex": int(cell[1:])-1,
+                        "endRowIndex": int(cell[1:]),
+                        "startColumnIndex": ord(cell[0].upper())-65,
+                        "endColumnIndex": ord(cell[0].upper())-64
+                    },
+                    "rows": [{
+                        "values": [{
+                            "userEnteredValue": {"stringValue": label},
+                            "userEnteredFormat": {"textFormat": {"bold": True}}
+                        }]
+                    }],
+                    "fields": "userEnteredValue,userEnteredFormat.textFormat"
+                }
+            })
+            
+            # Value
+            requests.append({
+                "updateCells": {
+                    "range": {
+                        "sheetId": dashboard.id,
+                        "startRowIndex": int(cell[1:]),
+                        "endRowIndex": int(cell[1:])+1,
+                        "startColumnIndex": ord(cell[0].upper())-65,
+                        "endColumnIndex": ord(cell[0].upper())-64
+                    },
+                    "rows": [{
+                        "values": [{
+                            "userEnteredValue": {"formulaValue": formula},
+                            "userEnteredFormat": {
+                                "textFormat": {"fontSize": 14, "bold": True},
+                                "backgroundColor": {"red": 0.94, "green": 0.94, "blue": 0.94}
+                            }
+                        }]
+                    }],
+                    "fields": "userEnteredValue,userEnteredFormat"
+                }
+            })
+        
+        # Add charts
+        pie_chart_request = {
+            "addChart": {
+                "chart": {
+                    "spec": {
+                        "title": "Application Status Distribution",
+                        "pieChart": {
+                            "legendPosition": "RIGHT_LEGEND",
+                            "domain": {
+                                "sourceRange": {
+                                    "sources": [{
+                                        "sheetId": worksheet.id,
+                                        "startRowIndex": 1,
+                                        "endRowIndex": 100,
+                                        "startColumnIndex": 8,
+                                        "endColumnIndex": 9
+                                    }]
+                                }
+                            },
+                            "series": {
+                                "sourceRange": {
+                                    "sources": [{
+                                        "sheetId": worksheet.id,
+                                        "startRowIndex": 0,
+                                        "endRowIndex": 100,
+                                        "startColumnIndex": 8,
+                                        "endColumnIndex": 9
+                                    }]
+                                }
+                            },
+                            "pieHole": 0.4
+                        }
+                    },
+                    "position": {
+                        "overlayPosition": {
+                            "anchorCell": {
+                                "sheetId": dashboard.id,
+                                "rowIndex": 15,
+                                "columnIndex": 0
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        requests.append(pie_chart_request)
+        
+        bar_chart_request = {
+            "addChart": {
+                "chart": {
+                    "spec": {
+                        "title": "Daily Applications",
+                        "barChart": {
+                            "legendPosition": "BOTTOM_LEGEND",
+                            "axis": [
+                                {"title": "Date"},
+                                {"title": "Count"}
+                            ],
+                            "domains": [{
+                                "domain": {
+                                    "sourceRange": {
+                                        "sources": [{
+                                            "sheetId": worksheet.id,
+                                            "startRowIndex": 1,
+                                            "endRowIndex": 100,
+                                            "startColumnIndex": 4,
+                                            "endColumnIndex": 5
+                                        }]
+                                    }
+                                }
+                            }],
+                            "series": [{
+                                "series": {
+                                    "sourceRange": {
+                                        "sources": [{
+                                            "sheetId": worksheet.id,
+                                            "startRowIndex": 0,
+                                            "endRowIndex": 100,
+                                            "startColumnIndex": 0,
+                                            "endColumnIndex": 1
+                                        }]
+                                    }
+                                },
+                                "targetAxis": "LEFT_AXIS"
+                            }]
+                        }
+                    },
+                    "position": {
+                        "overlayPosition": {
+                            "anchorCell": {
+                                "sheetId": dashboard.id,
+                                "rowIndex": 15,
+                                "columnIndex": 8
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        requests.append(bar_chart_request)
+        
         # Batch update the spreadsheet
         spreadsheet.batch_update(requests)
         
-        print(f"Google Sheets job tracker created successfully: {spreadsheet.url}")
+        print(f"Google Sheets job tracker with dashboard created successfully: {spreadsheet.url}")
         return spreadsheet.url
         
     except Exception as e:
@@ -229,9 +502,9 @@ def create_google_sheets_job_tracker(creds_file=None, sheet_name='Job Tracker'):
         return None
 
 def main():
-    print("Job Tracker Spreadsheet Creator")
-    print("1. Create Excel file (.xlsx)")
-    print("2. Create Google Sheets (requires service account credentials)")
+    print("Enhanced Job Tracker Spreadsheet Creator")
+    print("1. Create Excel file (.xlsx) with Dashboard")
+    print("2. Create Google Sheets with Dashboard (requires service account credentials)")
     
     choice = input("Enter your choice (1 or 2): ")
     
